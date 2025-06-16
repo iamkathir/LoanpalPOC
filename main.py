@@ -6,7 +6,6 @@ import google.generativeai as genai
 import json
 import re
 
-
 app = FastAPI(title="Best Bank Loan Credit Engine", description="Get the best bank loan recommendation based on user profile and bank policy.")
 
 # Enable CORS for all origins (for local development)
@@ -69,7 +68,7 @@ For each bank, provide:
 - emi: Calculated EMI for the eligible loan (as a string, e.g., "16500" or "₹16,500")
 
 Also provide:
-- enhancement_insights: Suggestions for improving eligibility or getting a better rate
+- enhancement_insights: A list of suggestions (strings) for improving eligibility or getting a better rate. Example: ["Add co-applicant", "Close existing loans"]
 - total_emi: The total EMI (including all existing loans for both applicant and co-applicant, as a string)
 
 Return a JSON object with these fields:
@@ -79,7 +78,7 @@ Return a JSON object with these fields:
 - loan_amount (as a string)
 - date
 - eligible_banks (list of all banks as above)
-- enhancement_insights
+- enhancement_insights (a list of strings)
 - total_emi (as a string)
 
 User Profile: {user_profile.dict()}
@@ -92,6 +91,9 @@ Respond ONLY with a valid JSON object matching the above structure. All numeric 
     text = re.sub(r'^```json|^```|```$', '', text, flags=re.MULTILINE).strip()
     try:
         result = json.loads(text)
+        # Fix enhancement_insights if it's returned as a single string instead of a list
+        if isinstance(result.get("enhancement_insights"), str):
+            result["enhancement_insights"] = [result["enhancement_insights"]]
     except Exception:
         return {"result": text}
     return result
