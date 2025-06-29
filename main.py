@@ -204,16 +204,7 @@ Respond ONLY with a valid JSON object matching the above structure. All numeric 
         return {"result": text}
     return result
 
-@app.post("/allbanks-eligibility")
-def allbanks_eligibility(user_profile: AllBanksUserProfile = Body(...)):
-    """
-    Returns eligibility and best offers for all banks based on detailed policy table (uses Gemini model).
-    """
-    result = get_all_banks_loan_eligibility(user_profile.dict())
-    try:
-        return json.loads(result)
-    except Exception:
-        return {"result": result}
+
 
 # Bank policy table as a Python dictionary
 BANK_POLICIES = {
@@ -462,12 +453,7 @@ def check_eligibility_policy(user_profile: dict):
         })
     return {"eligible_banks": results}
 
-@app.post("/policy-eligibility")
-def policy_eligibility(user_profile: AllBanksUserProfile = Body(...)):
-    """
-    Returns eligibility for all banks based on hardcoded policy logic (no LLM).
-    """
-    return check_eligibility_policy(user_profile.dict())
+
 
 @app.post("/policy-eligibility-nested")
 def policy_eligibility_nested(data: LoanFormInput = Body(...)):
