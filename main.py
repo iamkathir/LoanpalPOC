@@ -5,7 +5,6 @@ from typing import Optional, List, Any, Dict
 import google.generativeai as genai
 import json
 import re
-from Allbanks import get_all_banks_loan_eligibility
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
