@@ -1003,7 +1003,7 @@ def get_report(report_id=None):
 
 @app.get("/report", response_class=HTMLResponse)
 def report_page():
-    return open("POC-UI/report.html", "r", encoding="utf-8").read()
+    return open("report.html", "r", encoding="utf-8").read()
 
 @app.get("/api/report/latest")
 def get_latest_report():
