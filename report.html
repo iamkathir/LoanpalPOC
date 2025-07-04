@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loan Report</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <style>
+    body { background: #f5f5f5; }
+    .container { max-width: 900px; margin-top: 40px; background: #fff; border-radius: 10px; box-shadow: 0 2px 8px #0001; padding: 30px; }
+    .section-title { font-weight: bold; margin-top: 24px; }
+    .json-box { background: #f8f9fa; border: 1px solid #eee; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 0.95em; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2 class="mb-3">Loan Application Report</h2>
+    <!-- Phone number input for new report (not sent to backend) -->
+    <div class="mb-3">
+      <label for="phone-number" class="form-label">Phone Number</label>
+      <input type="text" class="form-control" id="phone-number" placeholder="Enter phone number">
+    </div>
+    <div class="row mb-3">
+      <div class="col-md-4">
+        <input type="text" id="filter-name" class="form-control" placeholder="Filter by Name">
+      </div>
+      <div class="col-md-4">
+        <input type="text" id="filter-phone" class="form-control" placeholder="Filter by Phone Number">
+      </div>
+      <div class="col-md-4">
+        <input type="text" id="filter-cibil" class="form-control" placeholder="Filter by CIBIL Score">
+      </div>
+    </div>
+    <div id="report-content">
+      <div>Loading report...</div>
+    </div>
+    <!-- <button id="download-btn" class="btn btn-primary mt-4">Download Output as PDF</button> -->
+  </div>
+  <script>
+    let allReports = [];
+    async function fetchAllReports() {
+      const res = await fetch('/api/report/all');
+      const data = await res.json();
+      allReports = Array.isArray(data) ? data : [];
+      renderReportTable();
+    }
+    function renderReportTable() {
+      let data = allReports;
+      const nameFilter = document.getElementById('filter-name').value.trim().toLowerCase();
+      const phoneFilter = document.getElementById('filter-phone').value.trim();
+      const cibilFilter = document.getElementById('filter-cibil').value.trim();
+      data = data.filter(report => {
+        const user = report.user_input;
+        const name = (user.applicant && user.applicant.name ? user.applicant.name : '').toLowerCase();
+        const phone = user.phone_number || (user.applicant && user.applicant.phone_number) || '';
+        const cibil = user.applicant && user.applicant.cibil_score ? String(user.applicant.cibil_score) : '';
+        return (!nameFilter || name.includes(nameFilter)) &&
+               (!phoneFilter || phone.includes(phoneFilter)) &&
+               (!cibilFilter || cibil.includes(cibilFilter));
+      });
+      let html = `<div class='section-title'>All Loan Applications</div>`;
+      html += `<div style='overflow-x:auto'><table class='table table-bordered table-sm'><thead><tr>`;
+      const fields = [
+        { key: 'name', label: 'Name', path: ['applicant', 'name'] },
+        { key: 'phone_number', label: 'Phone Number', path: ['phone_number'] },
+        { key: 'age', label: 'Age', path: ['applicant', 'age'] },
+        { key: 'cibil_score', label: 'CIBIL Score', path: ['applicant', 'cibil_score'] },
+        { key: 'income_type', label: 'Income Type', path: ['applicant', 'income_type'] },
+        { key: 'income_mode', label: 'Income Mode', path: ['applicant', 'income_mode'] },
+        { key: 'income_amount', label: 'Income Amount', path: ['applicant', 'income_amount'] },
+        { key: 'existing_loan_emi', label: 'Existing Loan EMI', path: ['applicant', 'existing_loan', 'monthly_emi'] },
+        { key: 'itr_3years', label: 'ITR for 3 Years', path: ['applicant', 'itr_3years'] },
+        { key: 'loan_type', label: 'Loan Type', path: ['loan_details', 'type'] },
+        { key: 'property_value', label: 'Property Value', path: ['loan_details', 'property_value'] },
+        { key: 'property_approval', label: 'Property Approval', path: ['loan_details', 'property_approval'] },
+        { key: 'loan_amount_requested', label: 'Loan Amount Requested', path: ['loan_details', 'loan_amount_requested'] },
+        { key: 'co_applicant_exists', label: 'Co-applicant Exists', path: ['co_applicant', 'exists'] },
+        { key: 'co_applicant_income_type', label: 'Co-applicant Income Type', path: ['co_applicant', 'income_type'] },
+        { key: 'co_applicant_income_mode', label: 'Co-applicant Income Mode', path: ['co_applicant', 'income_mode'] },
+        { key: 'co_applicant_income_amount', label: 'Co-applicant Income Amount', path: ['co_applicant', 'income_amount'] },
+        { key: 'co_applicant_existing_loan_emi', label: 'Co-applicant Existing Loan EMI', path: ['co_applicant', 'existing_emi'] },
+        { key: 'missing_or_late_payment', label: 'Missing or Late Payment', path: ['co_applicant', 'missing_or_late_payment'] },
+        { key: 'co_applicant_itr_3years', label: 'Co-applicant ITR for 3 Years', path: ['co_applicant', 'itr_3years'] },
+        { key: 'created_at', label: 'Created At', path: ['created_at'] },
+      ];
+      fields.forEach(f => html += `<th>${f.label}</th>`);
+      html += `<th>Download</th></tr></thead><tbody>`;
+      function getValue(obj, path) {
+        if (path[0] === 'phone_number') {
+          return obj.phone_number || (obj.applicant && obj.applicant.phone_number) || localStorage.getItem('phone_number') || '';
+        }
+        return path.reduce((acc, k) => (acc && typeof acc === 'object') ? acc[k] : '', obj);
+      }
+      data.forEach(report => {
+        html += '<tr>';
+        fields.forEach(f => html += `<td>${getValue(report.user_input, f.path) ?? (f.key === 'created_at' ? report.created_at : '')}</td>`);
+        html += `<td><button class='btn btn-sm btn-success' onclick='downloadReport(${report.id})'>PDF</button></td>`;
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+      document.getElementById('report-content').innerHTML = html;
+    }
+    // --- Add: Download PDF for a specific report ---
+    window.downloadReport = function(reportId) {
+      fetch(`/api/report/byid/${reportId}`).then(r => r.json()).then(data => {
+        const doc = new window.jspdf.jsPDF();
+        doc.setFontSize(14);
+        doc.text('Loan Application Report', 10, 15);
+        doc.setFontSize(11);
+        doc.text('User Input:', 10, 25);
+        let y = 30;
+        const fields = [
+          { key: 'name', label: 'Name', path: ['applicant', 'name'] },
+          { key: 'phone_number', label: 'Phone Number', path: ['phone_number'] },
+          { key: 'age', label: 'Age', path: ['applicant', 'age'] },
+          { key: 'cibil_score', label: 'CIBIL Score', path: ['applicant', 'cibil_score'] },
+          { key: 'income_type', label: 'Income Type', path: ['applicant', 'income_type'] },
+          { key: 'income_mode', label: 'Income Mode', path: ['applicant', 'income_mode'] },
+          { key: 'income_amount', label: 'Income Amount', path: ['applicant', 'income_amount'] },
+          { key: 'existing_loan_emi', label: 'Existing Loan EMI', path: ['applicant', 'existing_loan', 'monthly_emi'] },
+          { key: 'itr_3years', label: 'ITR for 3 Years', path: ['applicant', 'itr_3years'] },
+          { key: 'loan_type', label: 'Loan Type', path: ['loan_details', 'type'] },
+          { key: 'property_value', label: 'Property Value', path: ['loan_details', 'property_value'] },
+          { key: 'property_approval', label: 'Property Approval', path: ['loan_details', 'property_approval'] },
+          { key: 'loan_amount_requested', label: 'Loan Amount Requested', path: ['loan_details', 'loan_amount_requested'] },
+          { key: 'co_applicant_exists', label: 'Co-applicant Exists', path: ['co_applicant', 'exists'] },
+          { key: 'co_applicant_income_type', label: 'Co-applicant Income Type', path: ['co_applicant', 'income_type'] },
+          { key: 'co_applicant_income_mode', label: 'Co-applicant Income Mode', path: ['co_applicant', 'income_mode'] },
+          { key: 'co_applicant_income_amount', label: 'Co-applicant Income Amount', path: ['co_applicant', 'income_amount'] },
+          { key: 'co_applicant_existing_loan_emi', label: 'Co-applicant Existing Loan EMI', path: ['co_applicant', 'existing_emi'] },
+          { key: 'missing_or_late_payment', label: 'Missing or Late Payment', path: ['co_applicant', 'missing_or_late_payment'] },
+          { key: 'co_applicant_itr_3years', label: 'Co-applicant ITR for 3 Years', path: ['co_applicant', 'itr_3years'] },
+        ];
+        function getValue(obj, path) {
+          return path.reduce((acc, k) => (acc && typeof acc === 'object') ? acc[k] : '', obj);
+        }
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        fields.forEach(f => {
+          doc.text(`${f.label}: ${getValue(data.user_input, f.path) ?? ''}`, 10, y);
+          y += 7;
+          if (y > 270) { doc.addPage(); y = 15; }
+        });
+        y += 5;
+        doc.setFontSize(11);
+        doc.text('Loan Recommendation Output:', 10, y);
+        y += 5;
+        doc.setFontSize(9);
+        const outputLines = doc.splitTextToSize(JSON.stringify(data.output, null, 2), 180);
+        doc.text(outputLines, 10, y);
+        y += outputLines.length * 5 + 5;
+        // --- Append values from loan_report.html (localStorage) ---
+        const localReport = localStorage.getItem('loan_report');
+        if (localReport) {
+          try {
+            const report = JSON.parse(localReport);
+            y += 5;
+            doc.setFontSize(12);
+            doc.text('--- Latest Loan Report (from loan_report.html) ---', 10, y); y += 8;
+            doc.setFontSize(10);
+            if (report.name) { doc.text(`Name: ${report.name}`, 10, y); y += 6; }
+            if (report.phone_number) { doc.text(`Phone Number: ${report.phone_number}`, 10, y); y += 6; }
+            if (report.type_of_loan) { doc.text(`Type of Loan: ${report.type_of_loan}`, 10, y); y += 6; }
+            if (report.address) { doc.text(`Address: ${report.address}`, 10, y); y += 6; }
+            if (report.loan_amount) { doc.text(`Loan Amount: ${report.loan_amount}`, 10, y); y += 6; }
+            if (report.date) { doc.text(`Date: ${report.date}`, 10, y); y += 6; }
+            if (report.income_mode) { doc.text(`Applicant Income Mode: ${report.income_mode}`, 10, y); y += 6; }
+            if (typeof report.itr_3years !== 'undefined') { doc.text(`Applicant ITR filed for past 3 years?: ${report.itr_3years ? 'Yes' : 'No'}`, 10, y); y += 6; }
+            if (report.coapp_income_mode) { doc.text(`Co-applicant Income Mode: ${report.coapp_income_mode}`, 10, y); y += 6; }
+            if (typeof report.coapp_itr_3years !== 'undefined') { doc.text(`Co-applicant ITR filed for past 3 years?: ${report.coapp_itr_3years ? 'Yes' : 'No'}`, 10, y); y += 6; }
+            if (Array.isArray(report.eligible_banks)) {
+              doc.setFontSize(11);
+              doc.text('Eligible Banks:', 10, y); y += 7;
+              doc.setFontSize(9);
+              report.eligible_banks.forEach(b => {
+                doc.text(`- ${b.bank} (${b.eligible ? 'Eligible' : 'Not Eligible'}): ${b.remarks}`, 12, y); y += 6;
+                if (y > 270) { doc.addPage(); y = 15; }
+              });
+            }
+            if (Array.isArray(report.enhancement_insights)) {
+              doc.setFontSize(11);
+              doc.text('Enhancement Insights:', 10, y); y += 7;
+              doc.setFontSize(9);
+              report.enhancement_insights.forEach(i => { doc.text(`- ${i}`, 12, y); y += 6; });
+            }
+            if (report.total_emi) {
+              doc.setFontSize(11);
+              doc.text('Total EMI:', 10, y); y += 7;
+              doc.setFontSize(9);
+              doc.text(`${report.total_emi}`, 12, y); y += 6;
+            }
+          } catch (e) { /* ignore parse errors */ }
+        }
+        // --- End append ---
+        doc.save('loan_report_' + reportId + '.pdf');
+      });
+    }
+    // --- On load, fetch all reports as a table ---
+    fetchAllReports();
+    // Remove/disable the single download button
+    // document.getElementById('download-btn').style.display = 'none';
+    document.getElementById('filter-name').addEventListener('input', renderReportTable);
+    document.getElementById('filter-phone').addEventListener('input', renderReportTable);
+    document.getElementById('filter-cibil').addEventListener('input', renderReportTable);
+  </script>
+</body>
+</html>
