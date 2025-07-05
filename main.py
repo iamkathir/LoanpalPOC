@@ -41,6 +41,7 @@ class UserProfile(BaseModel):
     coapplicant_existing_loan: Optional[bool] = False
     coapplicant_existing_loan_amount: Optional[int] = None
     phone_number: Optional[str] = None  # <-- Add phone number field
+    loan_repayment_issue: Optional[bool] = False  # New field for repayment issue
 
 class EligibleBank(BaseModel):
     bank: str
@@ -126,6 +127,7 @@ class LoanFormInput(BaseModel):
     loan_details: LoanDetails
     co_applicant: Optional[CoApplicant] = None
     phone_number: Optional[str] = None  # <-- Add phone number field
+    loan_repayment_issue: Optional[bool] = False  # <-- Add repayment issue at top level
 
 def flatten_loan_form_input(data: LoanFormInput) -> Dict[str, Any]:
     # Map nested input to flat structure for policy eligibility
@@ -165,7 +167,8 @@ def flatten_loan_form_input(data: LoanFormInput) -> Dict[str, Any]:
         "coapp_missing_or_late_payment": getattr(co_app, 'missing_or_late_payment', None),
         "itr_3years": getattr(applicant, 'itr_3years', None),
         "coapp_itr_3years": getattr(co_app, 'itr_3years', None),
-        "phone_number": getattr(data, 'phone_number', None)  # <-- Add phone number to flat dict
+        "phone_number": getattr(data, 'phone_number', None),  # <-- Add phone number to flat dict
+        "loan_repayment_issue": getattr(data, 'loan_repayment_issue', False),
     }
 
 @app.post("/recommend-loan", response_model=RecommendationResponse)
@@ -279,7 +282,13 @@ BANK_POLICIES = {
     "SBI": {
         "min_cibil": 700,
         "min_income": 25000,
-        "foir": (0.55, 0.70),
+        "itr_for_business_profile": True,
+        "foir_slabs": [
+            {"min_income": 0, "max_income": 500000, "foir": 0.55},
+            {"min_income": 500001, "max_income": 800000, "foir": 0.60},
+            {"min_income": 800001, "max_income": 1000000, "foir": 0.65},
+            {"min_income": 1000001, "max_income": float('inf'), "foir": 0.70}
+        ],
         "min_age": 21,
         "max_age": 70,
         "employment_types": ["Salaried", "Self-Employed"],
@@ -292,19 +301,25 @@ BANK_POLICIES = {
         ],
         "ltv_lap": (0, 0.65),
         "loan_amount_range": (1000000, 500000000),
-        "tenure_range": (5, 30),
-        "interest_rate_hl": (7.5, 7.8),
-        "interest_rate_lap": (9.2, 10.3),
+        "tenure_range": {"hl": (5, 30), "lap": (7, 30)},
+        "interest_rate_hl": [
+            {"min_cibil": 700, "max_cibil": 719, "roi": 7.80},
+            {"min_cibil": 720, "max_cibil": 739, "roi": 7.70},
+            {"min_cibil": 740, "max_cibil": 759, "roi": 7.60},
+            {"min_cibil": 760, "max_cibil": 799, "roi": 7.55},
+            {"min_cibil": 800, "max_cibil": float('inf'), "roi": 7.50}
+        ],
+        "interest_rate_lap": (9.20, 10.30),
         "processing_fee": (0.005, 0.015),
         "accept_cash_salary": False,
-        "accept_surrogate_income": False,
-        "min_banking_vintage": 0,
-        "itr_for_business_profile": True,
-        "conditions": "FOIR: ₹3–5L → 55%, ₹5–8L → 60%, ₹8–10L → 65%, >₹10L → 70% | ROI HL:CIBIL 700+ -> 7.50–7.80% (profile-based) | ROI LAP: 9.20–10.30% | LTV HL (Salaried): ₹0–30L → 90%, ₹30–75L → 80%, >₹75L → 75% | Top-Up Loan: Same as HL | NRI HL – Salaried: ≤₹75L → 80%, >₹75L → 75% | NRI HL – Self-Employed: ≤₹75L → 75%, >₹75L → 70% | Realty HL (Salaried): ≤₹30L → 75%, ₹30–75L → 70%, >₹75L → 60% | P-LAP: ≤₹1Cr → 65%, ₹1–7.5Cr → 60%"
+        "accept_surrogate_income": {"hl": False, "lap": True},
+        "min_banking_vintage": {"hl": 0, "lap": 12},
+        "conditions": "See detailed table for NRI, Realty, P-LAP, Top-Up, etc."
     },
     "Canara": {
         "min_cibil": 700,
         "min_income": 25000,
+        "itr_for_business_profile": True,
         "foir": 0.75,
         "min_age": 21,
         "max_age": 75,
@@ -318,19 +333,19 @@ BANK_POLICIES = {
         ],
         "ltv_lap": (0, 0.5),
         "loan_amount_range": (1000000, float('inf')),
-        "tenure_range": (5, 30),
+        "tenure_range": {"hl": (5, 30), "lap": (7, 30)},
         "interest_rate_hl": (7.45, 7.6),
         "interest_rate_lap": (9.3, 10.3),
         "processing_fee": (0.005, 0.015),
         "accept_cash_salary": False,
         "accept_surrogate_income": False,
         "min_banking_vintage": 0,
-        "itr_for_business_profile": True,
-        "conditions": "FOIR Rule: Max 75%, with NTH ≥ 25% or ₹10K (whichever higher); ROI HL:CIBIL 700+ -> Best case – 7.55%, ₹1L–2.5Cr – 7.45%; ROI LAP: CIBIL 750+ → ₹1L–₹2Cr: 9.50%, ₹2Cr–₹3Cr: 9.40%, >₹3Cr: 9.30%; CIBIL 700–750 → ₹1L–₹2Cr: 9.75%, ₹2Cr–₹3Cr: 9.65%, >₹3Cr: 9.55%; CIBIL <700 → ₹1L–₹2Cr: 10.3%, ₹2Cr–₹3Cr: 10.2%, >₹3Cr: 10.1%; HL LTV: <₹30L → 90%, ₹30–75L → 80%, >₹75L or property >10yrs → 75%; LAP LTV: Fixed 50%; Special HL ₹10L allowed via current year VAO income certificate, manager approval required"
+        "conditions": "FOIR Details: <\u20B93L \u2192 35%, \u20B93	6L \u2192 45%, \u20B96	10L \u2192 50%, >\u20B910L \u2192 55%;\n\nLTV Details :\nLTV  HL \u2192 80%, LTV LAP \u2192 60%\n\nROI (HL) Account Salary:\nRack CIBIL 700 = 9.45%, CIBIL 701-729: 9.15%, CIBIL 730-749/NTC: 9.00%, CIBIL 750+: 8.75%\nROI (HL) Cash Salary:\nRack CIBIL 700: 9.50%,                                                                                     ASM Offer C700: 9.05%, 700	729: 8.40%, 730	749: 8.25%, 750+: 8.15%\n\nZSM Negotiated C700: 8.95%, 700	729: 8.30%, 730	749: 8.15%, 750	779: 8.05%, 780	799: 8.00%, 800+: 7.90%\n\nNSM Negotiated C700: 8.25%, 700	729: 8.20%, 730	749: 8.00%, 750	799: 7.95%, 800+: 7.90%\n\nSurrogate Income ROI Add-on: +0.15% to +0.50%\n\nTop-Up: Existing Customer +0.50%, BT+Top-Up +0.25%, Plot+Equity +0.50%\u21B5Bank Employee Rate: 7.90% (Repo + 2.40%)\n\nROI (LAP) Account Salary: 9.20	10.30% based on profile"
     },
     "HDFC": {
         "min_cibil": 700,
         "min_income": 20000,
+        "itr_for_business_profile": False,
         "foir_slabs": [
             {"max_income": 300000, "foir": 0.35},
             {"max_income": 600000, "foir": 0.45},
@@ -345,20 +360,24 @@ BANK_POLICIES = {
         "ltv_hl": (0, 0.8),
         "ltv_lap": (0, 0.6),
         "loan_amount_range": (300000, float('inf')),
-        "tenure_range": (7, 30),
-        "interest_rate_hl": (8.15, 9.6),
+        "tenure_range": {"hl": (7, 30), "lap": (7, 30)},
+        "interest_rate_hl": (8.15, 9.60),
         "interest_rate_lap": (9.5, 10.5),
         "processing_fee": (0.005, 0.015),
         "accept_cash_salary": True,
         "accept_surrogate_income": True,
         "min_banking_vintage": 12,
-        "itr_for_business_profile": False,
-        "conditions": "FOIR Details: <₹3L → 35%, ₹3–6L → 45%, ₹6–10L → 50%, >₹10L → 55%; LTV Details : LTV  HL → 80%, LTV LAP → 60%; ROI (HL) Account Salary: Rack – <CIBIL 700: 9.45%, CIBIL 700–729: 9.15%, CIBIL 730–749/NTC: 9.00%, CIBIL 750+: 8.75% | ROI (HL) Cash Salary: Rack – CIBIL 700 : 9.50%, ASM Offer – <700: 9.05%, 700–729: 8.40%, 730–749: 8.25%, 750+: 8.15% | ZSM Negotiated – <700: 8.95%, 700–729: 8.30%, 730–749: 8.15%, 750–779: 8.05%, 780–799: 8.00%, 800+: 7.90% | NSM Negotiated – <700: 8.25%, 700–729: 8.20%, 730–749: 8.00%, 750–799: 7.95%, 800+: 7.90% | Surrogate Income ROI Add-on: +0.15% to +0.50% | Top-Up: Existing Customer +0.50%, BT+Top-Up +0.25%, Plot+Equity +0.50% | Bank Employee Rate: 7.90% (Repo + 2.40%) | ROI (LAP) Account Salary: 9.20–10.30% based on profile | ROI (LAP) Cash Salary: 10.50% based on profile"
+        "conditions": "See detailed table for ROI slabs by CIBIL, salary mode, and negotiation."
     },
     "KVB": {
-        "min_cibil": 750,
+        "min_cibil": 700,
         "min_income": 30000,
-        "foir": 0.6,
+        "itr_for_business_profile": True,
+        "foir_slabs": [
+            {"max_income": 100000, "foir": 0.60},
+            {"max_income": 200000, "foir": 0.70},
+            {"max_income": float('inf'), "foir": 0.80}
+        ],
         "min_age": 21,
         "max_age": 60,
         "employment_types": ["Salaried", "Self-Employed"],
@@ -367,20 +386,24 @@ BANK_POLICIES = {
         "ltv_hl": (0, 0.8),
         "ltv_lap": (0, 0.8),
         "loan_amount_range": (1000000, float('inf')),
-        "tenure_range": (7, 30),
-        "interest_rate_hl": (8.5, 8.5),
-        "interest_rate_lap": (11, 11),
+        "tenure_range": {"hl": (7, 30), "lap": (7, 30)},
+        "interest_rate_hl": 8.25,
+        "interest_rate_lap": 10.25,
         "processing_fee": (0.01, 0.02),
         "accept_cash_salary": False,
         "accept_surrogate_income": False,
         "min_banking_vintage": 0,
-        "itr_for_business_profile": True,
-        "conditions": "ROI (HL): CIBIL 750 + ->8.50"
+        "conditions": "ROI (HL): CIBIL 700+ ->8.25; ROI (LAP): CIBIL 700+ ->10.25"
     },
     "Aditya Birla": {
         "min_cibil": 700,
         "min_income": 15000,
-        "foir": 0.5,
+        "itr_for_business_profile": False,
+        "foir_slabs": [
+            {"max_income": 30000, "foir": 0.50},
+            {"max_income": 40000, "foir": 0.60},
+            {"max_income": float('inf'), "foir": 0.65}
+        ],
         "min_age": 21,
         "max_age": 65,
         "employment_types": ["Salaried", "Self-Employed"],
@@ -389,15 +412,45 @@ BANK_POLICIES = {
         "ltv_hl": (0, 0.85),
         "ltv_lap": (0, 0.85),
         "loan_amount_range": (1000000, 10000000),
-        "tenure_range": (8, 25),
+        "tenure_range": {"hl": (8, 25), "lap": (8, 25)},
         "interest_rate_hl": (9.35, 10),
         "interest_rate_lap": (10.35, 14),
         "processing_fee": (0.01, 0.02),
         "accept_cash_salary": True,
         "accept_surrogate_income": True,
         "min_banking_vintage": 12,
-        "itr_for_business_profile": False,
-        "conditions": "FOIR Details: Cash salary capped at ₹30K → FOIR 50%; Account salary: ₹15K → FOIR 60%, >₹40K (i.e. >₹5L p.a.) → FOIR 65%; LTV Details: HL & LAP → Based on property class; max ~50% for LAP; ROI Details: ROI (HL) Account Salary: CIBIL >730 → 9.35%; CIBIL 700–730 → 9.85–12% (varies by property class); ROI (HL) Cash Salary: CIBIL >700 → 10.50%; ROI (LAP) Account Salary: 10.35–14% based on property class; ROI (LAP) Cash Salary: 12% based on property class"
+        "conditions": "FOIR: Cash salary max ₹30K→50%, Account salary: ₹15K→60%, >₹40K→65%; LTV: HL/LAP by property class; ROI: HL Account CIBIL>730→9.35%, 700–730→9.85–12%; HL Cash CIBIL>700→10.50%; LAP Account: 10.35–14%"
+    },
+    "ICICI": {
+        "min_cibil": 720,
+        "min_income": 35000,
+        "itr_for_business_profile": True,
+        "foir": {"salaried": 0.60, "business": 0.70},
+        "min_age": 21,
+        "max_age": 65,
+        "employment_types": ["Salaried", "Self-Employed"],
+        "property_types": ["Residential", "Commercial", "Plots"],
+        "approved_layout": True,
+        "ltv_hl": (0, 0.85),
+        "ltv_lap": (0, 0.60),
+        "loan_amount_range": (2000000, 70000000),
+        "tenure_range": {"hl": (5, 30), "lap": (5, 30)},
+        "interest_rate_hl": [
+            {"min_cibil": 800, "roi": 8.10},
+            {"min_cibil": 780, "roi": 8.30},
+            {"min_cibil": 750, "roi": 8.50},
+            {"min_cibil": 720, "roi": 8.75},
+            {"min_cibil": 0, "roi": 8.75}
+        ],
+        "interest_rate_lap": [
+            {"min_cibil": 780, "roi": 9.40},
+            {"min_cibil": 0, "roi": 10.50}
+        ],
+        "processing_fee": (0.01, 0.02),
+        "accept_cash_salary": False,
+        "accept_surrogate_income": False,
+        "min_banking_vintage": 0,
+        "conditions": "FOIR: Salaried 60%, Business 70%. ROI (HL): Normal 8.75%. ₹1Cr+ Loan → CIBIL ≥800: 8.10%, 780–799: 8.30%, 750–779: 8.50%, 720–749: 8.75%. ROI (LAP): Normal 10.50%. ₹1Cr+ & CIBIL ≥780: 9.40%."
     }
 }
 
@@ -512,11 +565,17 @@ def check_eligibility_policy(user_profile: dict):
             foir_limit = policy["foir"][1]
         else:
             foir_limit = policy.get("foir", 0.7)
+        # Handle FOIR as dict (e.g., ICICI)
+        if isinstance(foir_limit, dict):
+            emp_type = user_profile.get("employment_type", "salaried").lower()
+            foir_limit = foir_limit.get(emp_type, 0.7)
         # --- Maturity Age Calculation: Use max(applicant age, coapplicant age) ---
         current_age = max(user_profile.get("age", 0), user_profile.get("coapp_age", 0) or 0)
         maturity_age = policy.get("max_age", 70)
-        min_tenure = policy.get("tenure_range", (5, 30))[0]
-        max_tenure = policy.get("tenure_range", (5, 30))[1]
+        product = user_profile.get("product")
+        loan_type = "hl" if product == "HL" else "lap"
+        tenure_range = policy.get("tenure_range", {"hl": (5, 30), "lap": (7, 30)})
+        min_tenure, max_tenure = tenure_range.get(loan_type, (5, 30))
         eligible_tenure = calculate_eligible_tenure(current_age, maturity_age, min_tenure, max_tenure)
         # Affordability calculation (max EMI)
         total_income = user_profile.get("monthly_income", 0)
@@ -534,6 +593,19 @@ def check_eligibility_policy(user_profile: dict):
             roi = get_hdfc_roi(cibil, income_mode, policy.get("conditions", ""))
         elif bank == "Aditya Birla":
             roi = get_adityabirla_roi(cibil, income_mode, policy.get("conditions", ""))
+        elif bank in ("SBI", "ICICI"):
+            # Use ROI slabs from interest_rate_hl for HL, interest_rate_lap for LAP
+            if product == "HL":
+                roi = get_roi_from_slabs(cibil, policy.get("interest_rate_hl", []))
+            elif product == "LAP":
+                roi = get_roi_from_slabs(cibil, policy.get("interest_rate_lap", []))
+        elif bank == "Canara" and product == "HL":
+            # Use new Canara ROI logic
+            # Determine salary type: if income_mode is 'cash', use cash, else account
+            salary_type = "cash" if income_mode == "cash" else "account"
+            roi = get_canara_roi(cibil, salary_type, policy.get("conditions", ""))
+        elif bank == "KVB":
+            roi = get_kvb_roi(cibil, product, policy.get("conditions", ""))
         else:
             roi = get_dynamic_cibil_roi(cibil, policy.get("conditions", ""))
         # If not found, fallback to old logic
@@ -552,7 +624,14 @@ def check_eligibility_policy(user_profile: dict):
                     if not matched and len(slabs) > 0:
                         roi = slabs[-1]["roi"]
                 else:
-                    roi = policy.get("interest_rate_hl", (8.0, 9.0))[0]
+                    # Safely extract ROI value for interest_rate_hl
+                    roi_val = policy.get("interest_rate_hl", (8.0, 9.0))
+                    if isinstance(roi_val, (list, tuple)):
+                        roi = roi_val[0]
+                    elif isinstance(roi_val, (int, float)):
+                        roi = roi_val
+                    else:
+                        roi = 8.0
             elif product == "LAP":
                 cibil_slabs = policy.get("interest_rate_lap_slabs")
                 if cibil_slabs:
@@ -647,6 +726,8 @@ def full_eligibility(data: LoanFormInput = Body(...)):
     if not applicant_phone or not str(applicant_phone).strip():
         return JSONResponse(status_code=400, content={"error": "Applicant phone_number is required."})
     flat = flatten_loan_form_input(data)
+    # Use repayment issue from top-level LoanFormInput
+    loan_repayment_issue = getattr(data, 'loan_repayment_issue', False)
     results = []
     for bank, policy in BANK_POLICIES.items():
         eligible = True
@@ -715,11 +796,17 @@ def full_eligibility(data: LoanFormInput = Body(...)):
             foir_limit = policy["foir"][1]
         else:
             foir_limit = policy.get("foir", 0.7)
+        # Handle FOIR as dict (e.g., ICICI)
+        if isinstance(foir_limit, dict):
+            emp_type = flat.get("employment_type", "salaried").lower()
+            foir_limit = foir_limit.get(emp_type, 0.7)
         # --- Maturity Age Calculation: Use max(applicant age, coapplicant age) ---
         current_age = max(flat.get("age", 0), flat.get("coapp_age", 0) or 0)
         maturity_age = policy.get("max_age", 70)
-        min_tenure = policy.get("tenure_range", (5, 30))[0]
-        max_tenure = policy.get("tenure_range", (5, 30))[1]
+        product = flat.get("product")
+        loan_type = "hl" if product == "HL" else "lap"
+        tenure_range = policy.get("tenure_range", {"hl": (5, 30), "lap": (7, 30)})
+        min_tenure, max_tenure = tenure_range.get(loan_type, (5, 30))
         eligible_tenure = calculate_eligible_tenure(current_age, maturity_age, min_tenure, max_tenure)
         total_income = flat.get("monthly_income", 0)
         total_emi = flat.get("emi_after_loan", 0)
@@ -737,6 +824,16 @@ def full_eligibility(data: LoanFormInput = Body(...)):
         elif bank == "Aditya Birla":
             income_mode = flat.get("income_mode", "").lower()
             roi = get_adityabirla_roi(cibil, income_mode, policy.get("conditions", ""))
+        elif bank in ("SBI", "ICICI"):
+            if product == "HL":
+                roi = get_roi_from_slabs(cibil, policy.get("interest_rate_hl", []))
+            elif product == "LAP":
+                roi = get_roi_from_slabs(cibil, policy.get("interest_rate_lap", []))
+        elif bank == "Canara" and product == "HL":
+            salary_type = "cash" if income_mode == "cash" else "account"
+            roi = get_canara_roi(cibil, salary_type, policy.get("conditions", ""))
+        elif bank == "KVB":
+            roi = get_kvb_roi(cibil, product, policy.get("conditions", ""))
         else:
             roi = get_dynamic_cibil_roi(cibil, policy.get("conditions", ""))
         if roi is None:
@@ -753,8 +850,6 @@ def full_eligibility(data: LoanFormInput = Body(...)):
                             break
                     if not matched and len(slabs) > 0:
                         roi = slabs[-1]["roi"]
-                else:
-                    roi = policy.get("interest_rate_hl", (8.0, 9.0))[0]
             elif product == "LAP":
                 cibil_slabs = policy.get("interest_rate_lap_slabs")
                 if cibil_slabs:
@@ -775,6 +870,11 @@ def full_eligibility(data: LoanFormInput = Body(...)):
                     roi = policy.get("interest_rate_lap", (10.0, 12.0))[0]
             else:
                 roi = 8.0  # fallback default
+        # Ensure roi is a float, not a dict
+        if isinstance(roi, dict):
+            roi = roi.get("roi", 8.0)
+        if isinstance(roi, (list, tuple)) and len(roi) > 0:
+            roi = roi[0] if isinstance(roi[0], (int, float)) else 8.0
         if roi is None:
             roi = 8.0
         loan_amount, total_interest = calculate_amortization_loan_amount(max_emi, eligible_tenure, roi)
@@ -829,6 +929,9 @@ def full_eligibility(data: LoanFormInput = Body(...)):
             if not is_true(coapp_itr_3years):
                 eligible = True
                 remarks.append("Co-applicant business profile: ITR for past 3 years required as per bank policy.")
+        # Add loan repayment issue remark if present
+        if loan_repayment_issue:
+            remarks.append("You have loan repayment issue, it is banks internal call. Please try to negotiate with banks.")
         results.append({
             "bank": bank,
             "eligible": "Yes" if eligible else "No",
@@ -856,6 +959,7 @@ def full_eligibility(data: LoanFormInput = Body(...)):
             # Removed 'amortization_schedule' field to eliminate 'Show EMI schedule' from report
         })
     # After all calculations and before returning the response:
+    recommendations = generate_recommendations(flat)
     response_obj = {
         "name": flat.get("name", ""),
         "type_of_loan": flat.get("type_of_loan", ""),
@@ -863,7 +967,7 @@ def full_eligibility(data: LoanFormInput = Body(...)):
         "loan_amount": str(flat.get("loan_amount_requested", "")),
         "date": "",
         "eligible_banks": mapped_banks,
-        "enhancement_insights": [],
+        "enhancement_insights": recommendations,
         "total_emi": str(flat.get("emi_after_loan", 0))
     }
     # Save user input and output to DB
@@ -1037,42 +1141,156 @@ def get_report_by_id(report_id: int):
     return {"error": "No report found"}
 
 def get_hdfc_roi(cibil, income_mode, conditions):
-    """
-    Parse HDFC ROI for HL/LAP based on income_mode (cash/account) and CIBIL.
-    For cash salary: if CIBIL >= 700, ROI is always 9.5% (no further reduction).
-    """
-    if income_mode == 'cash':
+    # Placeholder logic for HDFC ROI selection (customize as needed)
+    # You can expand this logic based on actual HDFC ROI slabs if available
+    if income_mode == "cash":
         if cibil >= 700:
-            return 9.50
-        else:
-            return 9.50  # As per business rule, <700 also gets 9.50
+            return 9.5
     else:
-        # ROI (HL) Account Salary: Rack – <CIBIL 700: 9.45%, CIBIL 700–729: 9.15%, CIBIL 730–749/NTC: 9.00%, CIBIL 750+: 8.75%
-        if cibil < 700:
-            return 9.45
-        elif 700 <= cibil <= 729:
-            return 9.15
-        elif 730 <= cibil <= 749:
-            return 9.00
-        elif cibil >= 750:
-            return 8.75
-    return 9.6  # fallback
+        if cibil >= 730:
+            return 8.15
+        elif 700 <= cibil < 730:
+            return 9.0
+    return 9.5
 
 def get_adityabirla_roi(cibil, income_mode, conditions):
     """
     Parse Aditya Birla ROI for HL/LAP based on income_mode (cash/account) and CIBIL.
     """
-    # For HL
     if income_mode == 'cash':
-        if cibil > 700:
-            return 10.50
+        if cibil >= 700:
+            return 10.5
         else:
-            return 12.0
-    else:
-        if cibil > 730:
-            return 9.35
-        elif 700 <= cibil <= 730:
-            return 9.85
-        else:
-            return 12.0
+            return None
+    # For account salary, parse from conditions if possible
+    if cibil > 730:
+        return 9.35
+    elif 700 <= cibil <= 730:
+        return 9.85
     return 10.0  # fallback
+
+def get_canara_roi(cibil, income_mode, conditions):
+    """
+    Parse Canara Bank ROI slabs from the 'conditions' field and select the correct ROI
+    based on CIBIL and salary type (account/cash).
+    """
+    # Normalize and split the conditions
+    cond = conditions.replace("\u2013", "-").replace("\u2014", "-").replace("\u2192", ":").replace("\u21B5", "\n")
+    # Account Salary slabs
+    account_slabs = []
+    cash_slabs = []
+    # Parse Account Salary ROI
+    account_match = re.search(r'ROI \(HL\) Account Salary:(.*?)(?:ROI|$)', cond, re.DOTALL)
+    if account_match:
+        lines = account_match.group(1).split("\n")
+        for line in lines:
+            m = re.search(r'CIBIL (\d+)(?:\s*[-–]\s*(\d+))?(?:/NTC)?: ([\d.]+)%', line)
+            if m:
+                min_cibil = int(m.group(1))
+                max_cibil = int(m.group(2)) if m.group(2) else min_cibil
+                roi = float(m.group(3))
+                account_slabs.append({"min_cibil": min_cibil, "max_cibil": max_cibil, "roi": roi})
+            else:
+                m = re.search(r'CIBIL (\d+)\+: ([\d.]+)%', line)
+                if m:
+                    min_cibil = int(m.group(1))
+                    roi = float(m.group(2))
+                    account_slabs.append({"min_cibil": min_cibil, "max_cibil": 900, "roi": roi})
+    # Parse Cash Salary ROI
+    cash_match = re.search(r'ROI \(HL\) Cash Salary:(.*?)(?:ROI|$)', cond, re.DOTALL)
+    if cash_match:
+        lines = cash_match.group(1).split("\n")
+        for line in lines:
+            m = re.search(r'CIBIL (\d+)(?:\s*[-–]\s*(\d+))?(?:/NTC)?: ([\d.]+)%', line)
+            if m:
+                min_cibil = int(m.group(1))
+                max_cibil = int(m.group(2)) if m.group(2) else min_cibil
+                roi = float(m.group(3))
+                cash_slabs.append({"min_cibil": min_cibil, "max_cibil": max_cibil, "roi": roi})
+            else:
+                m = re.search(r'CIBIL (\d+)\+: ([\d.]+)%', line)
+                if m:
+                    min_cibil = int(m.group(1))
+                    roi = float(m.group(2))
+                    cash_slabs.append({"min_cibil": min_cibil, "max_cibil": 900, "roi": roi})
+    # Select correct slab
+    slabs = account_slabs if income_mode == "account" else cash_slabs
+    if not slabs:
+        return None
+    for slab in slabs:
+        if slab["min_cibil"] <= cibil <= slab["max_cibil"]:
+            return slab["roi"]
+    return slabs[-1]["roi"] if slabs else None
+
+def get_kvb_roi(cibil, product, conditions):
+    """
+    Parse KVB ROI slabs from the 'conditions' field and select the correct ROI
+    based on CIBIL and product (HL/LAP).
+    """
+    cond = conditions.replace("\u2013", "-").replace("\u2014", "-").replace("\u2192", ":").replace(",", ".")
+    # ROI (HL): CIBIL 700+ ->8.25; ROI (LAP): CIBIL 700+ ->10.25
+    if product == "HL":
+        m = re.search(r'ROI \(HL\): CIBIL (\d+)\+ *[-:>]+ *([\d.]+)', cond)
+        if m:
+            min_cibil = int(m.group(1))
+            roi = float(m.group(2))
+            if cibil >= min_cibil:
+                return roi
+    elif product == "LAP":
+        m = re.search(r'ROI \(LAP\): CIBIL (\d+)\+ *[-:>]+ *([\d.]+)', cond)
+        if m:
+            min_cibil = int(m.group(1))
+            roi = float(m.group(2))
+            if cibil >= min_cibil:
+                return roi
+    return None
+
+def get_roi_from_slabs(cibil, slabs):
+    """
+    Given a CIBIL score and a list of slabs (each with min_cibil, max_cibil, roi),
+    return the correct ROI for the user's CIBIL score. If no match, return the last slab's ROI.
+    """
+    if not slabs or not isinstance(slabs, list):
+        return None
+    for slab in slabs:
+        min_cibil = slab.get("min_cibil", 0)
+        max_cibil = slab.get("max_cibil", float('inf'))
+        if min_cibil <= cibil <= max_cibil:
+            return slab.get("roi")
+    # fallback: last slab's ROI
+    return slabs[-1].get("roi")
+
+def generate_recommendations(flat):
+    """
+    Generate recommendation texts based on user profile for enhancement insights.
+    """
+    recs = []
+    cibil = flat.get("cibil_score", 0)
+    income = flat.get("monthly_income", 0)
+    total_emi = flat.get("emi_after_loan", 0)
+    coapp_income = flat.get("coapp_income_amount", 0)
+    coapp_exists = coapp_income > 0
+    property_value = flat.get("property_value", 0)
+    requested_loan = flat.get("loan_amount_requested", 0)
+    # CIBIL based
+    if cibil < 750:
+        recs.append("Improve your CIBIL score above 750 for better rates and eligibility.")
+    # EMI/FOIR based
+    if total_emi > 0.5 * income:
+        recs.append("Reduce your existing EMIs to improve loan eligibility.")
+    # Co-applicant
+    if not coapp_exists:
+        recs.append("Adding a co-applicant with stable income can enhance your eligibility.")
+    # Property value vs loan
+    if requested_loan > 0 and property_value > 0 and requested_loan > 0.8 * property_value:
+        recs.append("Consider requesting a lower loan amount or increasing property value for better LTV.")
+    # Income
+    if income < 30000:
+        recs.append("Increase your monthly income to improve eligibility for more banks.")
+    # ITR
+    if flat.get("employment_type", "").lower() == "business" and not flat.get("itr_3years", False):
+        recs.append("File ITR for the last 3 years to be eligible for more banks.")
+    # Default
+    if not recs:
+        recs.append("Your profile is strong. You are eligible for most banks. Contact us for negotiation support.")
+    return recs
