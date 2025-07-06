@@ -340,7 +340,7 @@ BANK_POLICIES = {
         "accept_cash_salary": False,
         "accept_surrogate_income": False,
         "min_banking_vintage": 0,
-        "conditions": "FOIR Details: <\u20B93L \u2192 35%, \u20B93	6L \u2192 45%, \u20B96	10L \u2192 50%, >\u20B910L \u2192 55%;\n\nLTV Details :\nLTV  HL \u2192 80%, LTV LAP \u2192 60%\n\nROI (HL) Account Salary:\nRack CIBIL 700 = 9.45%, CIBIL 701-729: 9.15%, CIBIL 730-749/NTC: 9.00%, CIBIL 750+: 8.75%\nROI (HL) Cash Salary:\nRack CIBIL 700: 9.50%,                                                                                     ASM Offer C700: 9.05%, 700	729: 8.40%, 730	749: 8.25%, 750+: 8.15%\n\nZSM Negotiated C700: 8.95%, 700	729: 8.30%, 730	749: 8.15%, 750	779: 8.05%, 780	799: 8.00%, 800+: 7.90%\n\nNSM Negotiated C700: 8.25%, 700	729: 8.20%, 730	749: 8.00%, 750	799: 7.95%, 800+: 7.90%\n\nSurrogate Income ROI Add-on: +0.15% to +0.50%\n\nTop-Up: Existing Customer +0.50%, BT+Top-Up +0.25%, Plot+Equity +0.50%\u21B5Bank Employee Rate: 7.90% (Repo + 2.40%)\n\nROI (LAP) Account Salary: 9.20	10.30% based on profile"
+        "conditions": "FOIR Rule: Max 75%, with NTH ≥ 25% or ₹10K (whichever higher);\n\nROI HL:CIBIL 700+ -> Best case – 7.55%, ₹1L–2.5Cr – 7.45%;\n \nROI LAP: CIBIL 750+ → ₹1L–₹2Cr: 9.50%, ₹2Cr–₹3Cr: 9.40%, >₹3Cr: 9.30%; CIBIL 700–750 → ₹1L–₹2Cr: 9.75%, ₹2Cr–₹3Cr: 9.65%, >₹3Cr: 9.55%; CIBIL <700 → ₹1L–₹2Cr: 10.3%, ₹2Cr–₹3Cr: 10.2%, >₹3Cr: 10.1%;\n\n HL LTV: <₹30L → 90%, ₹30–75L → 80%, >₹75L or property >10yrs → 75%; \n\nLAP LTV: Fixed 50%;\n\n Special HL ₹10L allowed via current year VAO income certificate, manager approval required"
     },
     "HDFC": {
         "min_cibil": 700,
@@ -653,7 +653,11 @@ def check_eligibility_policy(user_profile: dict):
             else:
                 roi = 8.0  # fallback default
         if roi is None:
-            roi = 8.0
+            # For Canara, fallback to 7.55 if ROI is still None
+            if bank == "Canara":
+                roi = 7.55
+            else:
+                roi = 8.0
         # Amortization calculation for eligible loan amount
         loan_amount, total_interest = calculate_amortization_loan_amount(max_emi, eligible_tenure, roi)
         # LTV check
@@ -830,6 +834,8 @@ def full_eligibility(data: LoanFormInput = Body(...)):
             elif product == "LAP":
                 roi = get_roi_from_slabs(cibil, policy.get("interest_rate_lap", []))
         elif bank == "Canara" and product == "HL":
+            # Use new Canara ROI logic
+            # Determine salary type: if income_mode is 'cash', use cash, else account
             salary_type = "cash" if income_mode == "cash" else "account"
             roi = get_canara_roi(cibil, salary_type, policy.get("conditions", ""))
         elif bank == "KVB":
@@ -876,7 +882,11 @@ def full_eligibility(data: LoanFormInput = Body(...)):
         if isinstance(roi, (list, tuple)) and len(roi) > 0:
             roi = roi[0] if isinstance(roi[0], (int, float)) else 8.0
         if roi is None:
-            roi = 8.0
+            # For Canara, fallback to 7.55 if ROI is still None
+            if bank == "Canara":
+                roi = 7.55
+            else:
+                roi = 8.0
         loan_amount, total_interest = calculate_amortization_loan_amount(max_emi, eligible_tenure, roi)
         ltv_range = policy.get("ltv_hl", (0, 0.8)) if flat.get("product") == "HL" else policy.get("ltv_lap", (0, 0.6))
         ltv_limit = ltv_range[1] if isinstance(ltv_range, tuple) else ltv_range
@@ -1169,58 +1179,99 @@ def get_adityabirla_roi(cibil, income_mode, conditions):
         return 9.85
     return 10.0  # fallback
 
-def get_canara_roi(cibil, income_mode, conditions):
+def get_canara_roi(cibil, income_mode, conditions, loan_amount=None, product=None):
     """
     Parse Canara Bank ROI slabs from the 'conditions' field and select the correct ROI
-    based on CIBIL and salary type (account/cash).
+    based on CIBIL, loan amount, and product (HL/LAP).
     """
     # Normalize and split the conditions
     cond = conditions.replace("\u2013", "-").replace("\u2014", "-").replace("\u2192", ":").replace("\u21B5", "\n")
-    # Account Salary slabs
-    account_slabs = []
-    cash_slabs = []
-    # Parse Account Salary ROI
-    account_match = re.search(r'ROI \(HL\) Account Salary:(.*?)(?:ROI|$)', cond, re.DOTALL)
-    if account_match:
-        lines = account_match.group(1).split("\n")
-        for line in lines:
-            m = re.search(r'CIBIL (\d+)(?:\s*[-–]\s*(\d+))?(?:/NTC)?: ([\d.]+)%', line)
-            if m:
-                min_cibil = int(m.group(1))
-                max_cibil = int(m.group(2)) if m.group(2) else min_cibil
-                roi = float(m.group(3))
-                account_slabs.append({"min_cibil": min_cibil, "max_cibil": max_cibil, "roi": roi})
+    # For HL (Home Loan)
+    if product == "HL":
+        # ROI HL: CIBIL 700+ -> Best case – 7.55%, ₹1L–2.5Cr – 7.45%;
+        if cibil >= 700:
+            if loan_amount is not None and 100000 <= loan_amount <= 25000000:
+                return 7.45
             else:
-                m = re.search(r'CIBIL (\d+)\+: ([\d.]+)%', line)
-                if m:
-                    min_cibil = int(m.group(1))
-                    roi = float(m.group(2))
-                    account_slabs.append({"min_cibil": min_cibil, "max_cibil": 900, "roi": roi})
-    # Parse Cash Salary ROI
-    cash_match = re.search(r'ROI \(HL\) Cash Salary:(.*?)(?:ROI|$)', cond, re.DOTALL)
-    if cash_match:
-        lines = cash_match.group(1).split("\n")
-        for line in lines:
-            m = re.search(r'CIBIL (\d+)(?:\s*[-–]\s*(\d+))?(?:/NTC)?: ([\d.]+)%', line)
-            if m:
-                min_cibil = int(m.group(1))
-                max_cibil = int(m.group(2)) if m.group(2) else min_cibil
-                roi = float(m.group(3))
-                cash_slabs.append({"min_cibil": min_cibil, "max_cibil": max_cibil, "roi": roi})
-            else:
-                m = re.search(r'CIBIL (\d+)\+: ([\d.]+)%', line)
-                if m:
-                    min_cibil = int(m.group(1))
-                    roi = float(m.group(2))
-                    cash_slabs.append({"min_cibil": min_cibil, "max_cibil": 900, "roi": roi})
-    # Select correct slab
-    slabs = account_slabs if income_mode == "account" else cash_slabs
-    if not slabs:
+                return 7.55
+        else:
+            return 7.55
+    # For LAP (Loan Against Property)
+    elif product == "LAP":
+        # ROI LAP: CIBIL 750+ → ₹1L–₹2Cr: 9.50%, ₹2Cr–₹3Cr: 9.40%, >₹3Cr: 9.30%;
+        # CIBIL 700–750 → ₹1L–₹2Cr: 9.75%, ₹2Cr–₹3Cr: 9.65%, >₹3Cr: 9.55%;
+        # CIBIL <700 → ₹1L–₹2Cr: 10.3%, ₹2Cr–₹3Cr: 10.2%, >₹3Cr: 10.1%;
+        amt = loan_amount or 0
+        if cibil >= 750:
+            if 100000 <= amt <= 20000000:
+                return 9.50
+            elif 20000001 <= amt <= 30000000:
+                return 9.40
+            elif amt > 30000000:
+                return 9.30
+        elif 700 <= cibil < 750:
+            if 100000 <= amt <= 20000000:
+                return 9.75
+            elif 20000001 <= amt <= 30000000:
+                return 9.65
+            elif amt > 30000000:
+                return 9.55
+        elif cibil < 700:
+            if 100000 <= amt <= 20000000:
+                return 10.3
+            elif 20000001 <= amt <= 30000000:
+                return 10.2
+            elif amt > 30000000:
+                return 10.1
         return None
-    for slab in slabs:
-        if slab["min_cibil"] <= cibil <= slab["max_cibil"]:
-            return slab["roi"]
-    return slabs[-1]["roi"] if slabs else None
+    return None
+
+def get_canara_roi_from_conditions(cibil, loan_amount, product, conditions):
+    """
+    Parse Canara Bank ROI from the 'conditions' string only, using CIBIL, loan amount, and product (HL/LAP).
+    Returns the correct ROI as per the provided policy string.
+    """
+    # Normalize
+    cond = conditions.replace("\u2013", "-").replace("\u2014", "-").replace("\u2192", ":").replace("\u21B5", "\n")
+    # HL
+    if product == "HL":
+        # ROI HL:CIBIL 700+ -> Best case – 7.55%, ₹1L–2.5Cr – 7.45%;
+        if cibil >= 700:
+            if 100000 <= loan_amount <= 25000000:
+                return 7.45
+            else:
+                return 7.55
+        # For CIBIL < 700, no ROI available in standard policy
+        return None
+    # LAP
+    elif product == "LAP":
+        # ROI LAP: CIBIL 750+ → ₹1L–₹2Cr: 9.50%, ₹2Cr–₹3Cr: 9.40%, >₹3Cr: 9.30%;
+        # CIBIL 700–750 → ₹1L–₹2Cr: 9.75%, ₹2Cr–₹3Cr: 9.65%, >₹3Cr: 9.55%;
+        # CIBIL <700 → ₹1L–₹2Cr: 10.3%, ₹2Cr–₹3Cr: 10.2%, >₹3Cr: 10.1%;
+        amt = loan_amount or 0
+        if cibil >= 750:
+            if 100000 <= amt <= 20000000:
+                return 9.50
+            elif 20000001 <= amt <= 30000000:
+                return 9.40
+            elif amt > 30000000:
+                return 9.30
+        elif 700 <= cibil < 750:
+            if 100000 <= amt <= 20000000:
+                return 9.75
+            elif 20000001 <= amt <= 30000000:
+                return 9.65
+            elif amt > 30000000:
+                return 9.55
+        elif cibil < 700:
+            if 100000 <= amt <= 20000000:
+                return 10.3
+            elif 20000001 <= amt <= 30000000:
+                return 10.2
+            elif amt > 30000000:
+                return 10.1
+        return None
+    return None
 
 def get_kvb_roi(cibil, product, conditions):
     """
