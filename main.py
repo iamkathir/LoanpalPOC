@@ -42,6 +42,7 @@ class UserProfile(BaseModel):
     coapplicant_existing_loan_amount: Optional[int] = None
     phone_number: Optional[str] = None  # <-- Add phone number field
     loan_repayment_issue: Optional[bool] = False  # New field for repayment issue
+    coapplicant_loan_repayment_issue: Optional[bool] = False 
 
 class EligibleBank(BaseModel):
     bank: str
@@ -128,6 +129,7 @@ class LoanFormInput(BaseModel):
     co_applicant: Optional[CoApplicant] = None
     phone_number: Optional[str] = None  # <-- Add phone number field
     loan_repayment_issue: Optional[bool] = False  # <-- Add repayment issue at top level
+    coapplicant_loan_repayment_issue: Optional[bool] = False  # <-- Add co-applicant repayment issue
 
 def flatten_loan_form_input(data: LoanFormInput) -> Dict[str, Any]:
     # Map nested input to flat structure for policy eligibility
@@ -169,6 +171,7 @@ def flatten_loan_form_input(data: LoanFormInput) -> Dict[str, Any]:
         "coapp_itr_3years": getattr(co_app, 'itr_3years', None),
         "phone_number": getattr(data, 'phone_number', None),  # <-- Add phone number to flat dict
         "loan_repayment_issue": getattr(data, 'loan_repayment_issue', False),
+        "coapplicant_loan_repayment_issue": getattr(data, 'coapplicant_loan_repayment_issue', False)
     }
 
 @app.post("/recommend-loan", response_model=RecommendationResponse)
@@ -732,6 +735,7 @@ def full_eligibility(data: LoanFormInput = Body(...)):
     flat = flatten_loan_form_input(data)
     # Use repayment issue from top-level LoanFormInput
     loan_repayment_issue = getattr(data, 'loan_repayment_issue', False)
+    coapplicant_loan_repayment_issue = getattr(data, 'coapplicant_loan_repayment_issue', False)
     results = []
     for bank, policy in BANK_POLICIES.items():
         eligible = True
@@ -942,6 +946,8 @@ def full_eligibility(data: LoanFormInput = Body(...)):
         # Add loan repayment issue remark if present
         if loan_repayment_issue:
             remarks.append("You have loan repayment issue, it is banks internal call. Please try to negotiate with banks.")
+        if coapplicant_loan_repayment_issue:
+            remarks.append("Co-applicant has loan repayment issue, it is banks internal call. Please try to negotiate with banks.")
         results.append({
             "bank": bank,
             "eligible": "Yes" if eligible else "No",
